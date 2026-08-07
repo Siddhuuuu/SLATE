@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Design tokens for SLATE.
+
+  Concept: a drafting table at night. The UI chrome (topbar, side panel,
+  metrics) is a quiet dark charcoal so it recedes and never competes with
+  ink on the canvas. The canvas itself is a cool, neutral paper — not the
+  warm cream that's become an AI-generated-UI tell — so strokes and drafts
+  read with maximum contrast regardless of ink color.
+
+  The one accent color (electric indigo) is reserved for exactly one
+  meaning: "the system is actively doing something" — the streaming draft
+  border, the primary action, the focus ring. Pending is amber, ready/
+  accepted is green, discarded/error is the destructive red. Once you know
+  the four-color vocabulary, every draft's state is readable at a glance
+  without reading any text.
+*/
+
+@layer base {
+  :root {
+    --background: 220 15% 7%;
+    --foreground: 210 15% 92%;
+
+    --card: 220 13% 10%;
+    --card-foreground: 210 15% 92%;
+
+    --popover: 220 13% 10%;
+    --popover-foreground: 210 15% 92%;
+
+    --primary: 234 89% 65%;
+    --primary-foreground: 220 25% 98%;
+
+    --secondary: 220 11% 16%;
+    --secondary-foreground: 210 15% 90%;
+
+    --muted: 220 11% 14%;
+    --muted-foreground: 218 9% 58%;
+
+    --accent: 234 89% 65%;
+    --accent-foreground: 220 25% 98%;
+
+    --destructive: 356 75% 61%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 10% 19%;
+    --input: 220 10% 19%;
+    --ring: 234 89% 65%;
+
+    --radius: 0.6rem;
+
+    /* SLATE-specific */
+    --chrome: 220 15% 7%;
+    --chrome-2: 220 13% 10%;
+    --paper: 200 14% 97%;
+    --pending: 36 84% 58%;
+    --streaming: 234 89% 65%;
+    --ready: 152 52% 44%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-chrome text-foreground antialiased;
+    font-feature-settings: "cv11", "ss01";
+  }
+  ::selection {
+    background-color: hsl(var(--primary) / 0.35);
+  }
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+  /* Tabular numerals wherever we render metrics — digits must not jitter
+     in width as they update on every poll tick. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Thin, quiet scrollbars that match the chrome, not the OS default */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 999px;
+  border: 2px solid hsl(var(--chrome));
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
+/*
+  The one signature interaction (PRD §5): a draft's border literally shows
+  its own state. Dashed = not yet final. Marching ants = actively
+  streaming, i.e. "the system is working right now." Solid = settled,
+  either accepted or discarded. You can read a draft's status from across
+  the room without reading a single word of it.
+*/
+@keyframes slate-marching-ants {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+.draft-marching-ants {
+  animation: slate-marching-ants 0.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .draft-marching-ants {
+    animation: none;
+  }
+}
