@@ -29,3 +29,5 @@ benchmark_canvases/
 .DS_Store
 .vscode/
 .idea/
+frontend/vite.config.d.ts
+frontend/vite.config.js
