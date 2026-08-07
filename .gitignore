@@ -1,0 +1,31 @@
+# --- secrets ---
+.env
+.env.local
+backend/.env
+frontend/.env
+frontend/.env.local
+
+# --- backend (Python) ---
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+backend/traces/*.jsonl
+
+# --- frontend (Node) ---
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+frontend/tsconfig.node.tsbuildinfo
+frontend/.vite/
+
+# --- experiment output ---
+reports/
+benchmark_canvases/
+
+# --- OS / editor ---
+.DS_Store
+.vscode/
+.idea/
