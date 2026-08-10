@@ -11,6 +11,7 @@ import {
 } from "tldraw";
 
 import { cn } from "@/lib/utils";
+import { MathText } from "./MathText";
 import type { DraftStatus } from "@/lib/types";
 
 export const DRAFT_SHAPE_TYPE = "draft" as const;
@@ -157,7 +158,9 @@ export class DraftShapeUtil extends ShapeUtil<DraftShape> {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap text-sm leading-snug">
-            {text || (
+            {text ? (
+              <MathText text={text} />
+            ) : (
               <span className="italic text-muted-foreground">
                 {status === "pending" ? "Waiting to send…" : "Thinking…"}
               </span>

@@ -1,11 +1,21 @@
 import { useEffect, useState } from "react";
-import { Tldraw, type Editor } from "tldraw";
+import { Tldraw, type Editor, type TLComponents } from "tldraw";
 import "tldraw/tldraw.css";
+import "katex/dist/katex.min.css";
 
 import { DraftShapeUtil, DRAFT_SHAPE_TYPE } from "./DraftShapeUtil";
 import { useDraftLifecycle } from "@/hooks/useDraftLifecycle";
 
 const shapeUtils = [DraftShapeUtil];
+
+// DebugMenu/DebugPanel are tldraw's own dev-testing chrome (the "..." menu
+// with "Show toast" / "Create 100 shapes" / etc.) — never meant to ship in
+// a real product. tldraw's native StylePanel (the color/opacity/size
+// picker) is left alone; that's real drawing functionality the app needs.
+const components: TLComponents = {
+  DebugMenu: null,
+  DebugPanel: null,
+};
 
 export interface CanvasProps {
   onEditorReady?: (editor: Editor) => void;
@@ -36,6 +46,7 @@ export function Canvas({ onEditorReady, onTriggerReady }: CanvasProps) {
     <div className="h-full w-full bg-paper">
       <Tldraw
         shapeUtils={shapeUtils}
+        components={components}
         onMount={(ed) => {
           setEditor(ed);
           onEditorReady?.(ed);
