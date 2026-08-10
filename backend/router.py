@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from models import Provider, RegionContext, Tier
 from adapters.client import PROVIDER_CONFIG
+from quota_guard import QuotaExceeded, check_gemini_quota, record_gemini_request
 
 
 @dataclass(frozen=True)
@@ -73,8 +74,20 @@ def decide(
     harness, which pins an arm to a specific provider and must bypass the
     heuristic entirely (PRD §3 — arms must be pinned, never auto-routed,
     or a rate-limit fallback silently contaminates the data).
+
+    Gemini calls — auto-routed or pinned — are quota-guarded (see
+    quota_guard.py). The two paths fail differently on purpose:
+    auto-routed requests downgrade to fast/Ollama with an honest reason
+    logged in the trace (a background draft isn't worth risking an
+    overage for). Pinned experiment requests re-raise QuotaExceeded
+    instead of downgrading — silently substituting Ollama for a pinned
+    "gemini" arm would corrupt exactly the data the experiment exists to
+    produce, which is worse than the run failing loudly.
     """
     if provider_override is not None:
+        if provider_override == Provider.gemini:
+            check_gemini_quota()  # raises QuotaExceeded — never silently substituted
+            record_gemini_request()
         cfg = PROVIDER_CONFIG[provider_override.value]
         return RoutingDecision(
             tier=Tier.heavy if provider_override != Provider.ollama else Tier.fast,
@@ -114,10 +127,27 @@ def decide(
             reason="within fast-tier thresholds" if not reasons else "; ".join(reasons),
         )
 
+    # Heavy tier wants Gemini — but a background auto-routed draft is
+    # never worth risking a free-tier overage for. Downgrade to fast/
+    # Ollama with an honest reason if quota's tight, rather than firing
+    # the call anyway or hard-failing the user's draft.
+    base_reason = "; ".join(reasons) or "exceeded fast-tier thresholds"
+    try:
+        check_gemini_quota()
+    except QuotaExceeded as exc:
+        cfg = PROVIDER_CONFIG["ollama"]
+        return RoutingDecision(
+            tier=Tier.fast,
+            provider=Provider.ollama,
+            model=cfg["model"],
+            reason=f"{base_reason}; downgraded from heavy tier — {exc}",
+        )
+
+    record_gemini_request()
     cfg = PROVIDER_CONFIG["gemini"]
     return RoutingDecision(
         tier=Tier.heavy,
         provider=Provider.gemini,
         model=cfg["model"],
-        reason="; ".join(reasons) or "exceeded fast-tier thresholds",
+        reason=base_reason,
     )

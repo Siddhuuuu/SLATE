@@ -38,6 +38,7 @@ from models import (
     new_request_id,
 )
 from router import decide as route_decide
+from quota_guard import QuotaExceeded
 from tracer import tracer
 
 # request_id -> asyncio.Queue[(event_name, data_dict) | None]
@@ -75,7 +76,16 @@ app.add_middleware(
 
 @app.post("/requests", response_model=CreateRequestOut)
 async def create_request(payload: CreateRequestIn) -> CreateRequestOut:
-    decision = route_decide(payload.context, provider_override=payload.provider_override)
+    try:
+        decision = route_decide(payload.context, provider_override=payload.provider_override)
+    except QuotaExceeded as exc:
+        # Only reachable via a pinned provider_override=gemini (the auto-
+        # routed path downgrades gracefully inside router.py and never
+        # raises this) — a pinned request that can't safely run is a 429,
+        # not a 500, and must fail loudly rather than silently substitute
+        # a different provider. See router.py's decide() docstring.
+        raise HTTPException(status_code=429, detail=str(exc))
+
     request_id = new_request_id()
 
     trace = TraceLine(
@@ -129,6 +139,28 @@ async def _run_model_call(
         client = get_client(provider)  # type: ignore[arg-type]
         tracer.mark_dispatch_complete(request_id)
 
+        # think=False is an Ollama-specific request field (0.6+, both
+        # /api/chat and its OpenAI-compat endpoint) for reasoning-capable
+        # local models. Gemini's API rejects any request containing an
+        # unrecognized top-level field with a hard 400 — so this must
+        # never be sent to non-Ollama providers. Not guaranteed to fully
+        # suppress reasoning on every Ollama version/model combo either,
+        # which is exactly why the delta.content-only filtering below is
+        # the real guarantee — this is a latency optimization on top of
+        # that, not a substitute for it.
+        #
+        # reasoning_effort is the Gemini-side equivalent, with one hard
+        # difference confirmed against Google's own docs: thinking CANNOT
+        # be fully disabled on Gemini 2.5 Pro or any Gemini 3.x model —
+        # "low" is the minimum, not "off". Same reasoning applies: never
+        # send an Ollama-only or Gemini-only param to the other provider,
+        # since both APIs 400 on fields they don't recognize.
+        extra_kwargs: dict = {}
+        if provider == "ollama":
+            extra_kwargs["extra_body"] = {"think": False}
+        elif provider == "gemini":
+            extra_kwargs["reasoning_effort"] = "low"
+
         stream = await client.chat.completions.create(
             model=model,
             stream=True,
@@ -142,18 +174,29 @@ async def _run_model_call(
                         {"type": "text", "text": "Continue/complete this handwritten region."},
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:image/webp;base64,{image_b64}"},
+                            # Frontend crops are PNG (see roi.ts — Ollama's
+                            # Go image backend can't decode WebP). Mime type
+                            # here must match what's actually encoded below.
+                            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
                         },
                     ],
                 },
             ],
+            **extra_kwargs,
         )
 
         full_text = ""
         usage_obj = None
         async for chunk in stream:
             if chunk.choices:
-                delta = chunk.choices[0].delta.content or ""
+                delta_obj = chunk.choices[0].delta
+                # Reasoning-capable models (qwen3-vl included) stream two
+                # separate channels: delta.content (the actual answer) and
+                # delta.reasoning (internal chain-of-thought). These must
+                # never be merged — reasoning is not a draft, and showing
+                # it as one silently breaks the "no preamble" contract in
+                # SYSTEM_PROMPT. Only delta.content is ever shown.
+                delta = delta_obj.content or ""
                 if delta:
                     full_text += delta
                     await queue.put(("token", {"text": delta}))
@@ -253,6 +296,7 @@ async def report_outcome(request_id: str, payload: OutcomeIn) -> OutcomeOut:
                 input_tokens=pending_trace.tokens.input_tokens,
                 output_tokens=pending_trace.tokens.output_tokens,
                 image_tokens=pending_trace.tokens.image_tokens,
+                total_tokens=pending_trace.tokens.total_tokens,
             )
         except KeyError:
             cost_usd = None  # unknown model in rate table — don't crash the outcome report over it

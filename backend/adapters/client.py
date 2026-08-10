@@ -12,7 +12,10 @@ import os
 from functools import lru_cache
 from typing import Literal
 
+from dotenv import load_dotenv
 from openai import AsyncOpenAI
+
+load_dotenv()
 
 ProviderName = Literal["gemini", "ollama", "openrouter"]
 
@@ -20,7 +23,10 @@ PROVIDER_CONFIG: dict[str, dict] = {
     "gemini": dict(
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         api_key=os.environ.get("GEMINI_API_KEY", ""),
-        model="gemini-3-flash",
+        # Free-tier model availability shifts and varies per account/region
+        # — confirm what YOUR AI Studio dashboard actually shows before
+        # trusting this default. Override via GEMINI_MODEL in .env.
+        model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
     ),
     "ollama": dict(
         base_url="http://localhost:11434/v1",
