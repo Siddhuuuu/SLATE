@@ -5,10 +5,14 @@ import { DRAFT_SHAPE_TYPE, registerDraftShapeCallbacks } from "@/components/canv
 import { captureRegion, determineRoi, DEFAULT_IDLE_MS } from "@/components/canvas/roi";
 import { cancelRequest, createRequest, reportOutcome, streamDraft } from "@/lib/api";
 
-interface InFlight {
+interface ActiveDraft {
   requestId: string;
   draftShapeId: TLShapeId;
-  eventSource: EventSource;
+  // null once the stream has completed (status "ready") — nothing left to
+  // cancel client-side at that point, but the draft is still *unsettled*
+  // (not yet accepted/discarded) and must still be superseded, not left
+  // sitting next to a fresher capture.
+  eventSource: EventSource | null;
   streamStartedAt: number;
 }
 
@@ -17,9 +21,13 @@ interface InFlight {
 type PendingRenderTimes = Map<string, number>;
 
 export function useDraftLifecycle(editor: Editor | null) {
-  const recentDrawTimestamps = useRef<Map<TLShapeId, number>>(new Map());
+  // Every draw-shape id created/updated since the LAST accept/discard.
+  // Deliberately not time-windowed: "E=mc²" written with normal pauses
+  // between characters is one uncommitted thought, not several. This set
+  // only shrinks when finalizeOutcome() resets it.
+  const uncommittedDrawIds = useRef<Set<TLShapeId>>(new Set());
   const idleTimer = useRef<number | null>(null);
-  const inFlight = useRef<InFlight | null>(null);
+  const activeDraft = useRef<ActiveDraft | null>(null);
   const pendingRenderTimes = useRef<PendingRenderTimes>(new Map());
   // Holds the current effect's triggerCapture so the stable callback below
   // can always reach the latest closure without itself changing identity.
@@ -51,7 +59,12 @@ export function useDraftLifecycle(editor: Editor | null) {
       const shape = editor!.getShape(draftShapeId);
       if (!shape) return;
       editor!.updateShape({ id: draftShapeId, type: DRAFT_SHAPE_TYPE, props: { status: "ready" } });
-      if (inFlight.current?.requestId === requestId) inFlight.current = null;
+      // Still unsettled — just no longer has a live stream to cancel. Stays
+      // in activeDraft so a later capture (more ink added) supersedes it
+      // instead of spawning a second box next to it.
+      if (activeDraft.current?.requestId === requestId) {
+        activeDraft.current.eventSource = null;
+      }
     }
 
     function markError(draftShapeId: TLShapeId, message: string) {
@@ -62,7 +75,7 @@ export function useDraftLifecycle(editor: Editor | null) {
         type: DRAFT_SHAPE_TYPE,
         props: { status: "error", text: `Couldn't generate a draft: ${message}` },
       });
-      inFlight.current = null;
+      activeDraft.current = null;
     }
 
     async function finalizeOutcome(requestId: string, outcome: "accepted" | "discarded") {
@@ -80,17 +93,25 @@ export function useDraftLifecycle(editor: Editor | null) {
         }
       }
 
+      if (activeDraft.current?.requestId === requestId) activeDraft.current = null;
+      // This ink is now settled either way — the NEXT stroke starts a
+      // brand new uncommitted region, not a continuation of this one.
+      uncommittedDrawIds.current.clear();
+
       await reportOutcome(requestId, { outcome, t_render_ms: renderMs });
     }
 
-    async function supersedeInFlight() {
-      const current = inFlight.current;
+    /** Replaces whatever draft is currently unsettled — streaming or
+     * already ready — with nothing, clearing the way for a fresh capture
+     * that reflects everything accumulated so far. */
+    async function supersedeActive() {
+      const current = activeDraft.current;
       if (!current) return;
-      current.eventSource.close();
-      await cancelRequest(current.requestId);
+      current.eventSource?.close();
+      await cancelRequest(current.requestId); // best-effort no-op if already finalized server-side
       const shape = editor!.getShape(current.draftShapeId);
       if (shape) editor!.deleteShape(shape.id);
-      inFlight.current = null;
+      activeDraft.current = null;
     }
 
     function scheduleIdleCheck() {
@@ -101,21 +122,18 @@ export function useDraftLifecycle(editor: Editor | null) {
     }
 
     async function triggerCapture() {
-      const now = Date.now();
-      const recentIds = [...recentDrawTimestamps.current.entries()]
-        .filter(([, t]) => now - t <= DEFAULT_IDLE_MS * 1.5)
-        .map(([id]) => id);
+      const drawIds = [...uncommittedDrawIds.current];
 
-      if (recentIds.length === 0 && editor!.getSelectedShapeIds().length === 0) {
+      if (drawIds.length === 0 && editor!.getSelectedShapeIds().length === 0) {
         return; // nothing to react to — don't fire a request over an empty canvas
       }
 
       const t0 = performance.now();
-      const roi = determineRoi(editor!, recentIds);
-      const captured = await captureRegion(editor!, roi, { strokeCount: recentIds.length });
+      const roi = determineRoi(editor!, drawIds);
+      const captured = await captureRegion(editor!, roi, { strokeCount: drawIds.length });
       const tCaptureMs = performance.now() - t0;
 
-      await supersedeInFlight();
+      await supersedeActive();
 
       const draftShapeId = createShapeId();
       editor!.createShape({
@@ -166,7 +184,7 @@ export function useDraftLifecycle(editor: Editor | null) {
         onError: (message) => markError(draftShapeId, message),
       });
 
-      inFlight.current = { requestId: created.request_id, draftShapeId, eventSource, streamStartedAt };
+      activeDraft.current = { requestId: created.request_id, draftShapeId, eventSource, streamStartedAt };
     }
 
     registerDraftShapeCallbacks({
@@ -176,7 +194,8 @@ export function useDraftLifecycle(editor: Editor | null) {
 
     triggerCaptureRef.current = () => void triggerCapture();
 
-    // Track ink activity: any create/update of a `draw`-type shape resets
+    // Track ink activity: any create/update of a `draw`-type shape adds it
+    // to the uncommitted set (permanently, until accept/discard) and resets
     // the idle timer. Per PRD §6, the trigger is idle-since-last-pointer-up
     // OR an explicit gesture — the explicit-gesture path is wired in
     // TopBar's "Generate now" button, which calls triggerCapture directly.
@@ -185,13 +204,13 @@ export function useDraftLifecycle(editor: Editor | null) {
         let sawInk = false;
         for (const record of Object.values(entry.changes.added)) {
           if ((record as any).typeName === "shape" && (record as any).type === "draw") {
-            recentDrawTimestamps.current.set((record as any).id, Date.now());
+            uncommittedDrawIds.current.add((record as any).id);
             sawInk = true;
           }
         }
         for (const [, next] of Object.values(entry.changes.updated) as any[]) {
           if (next.typeName === "shape" && next.type === "draw") {
-            recentDrawTimestamps.current.set(next.id, Date.now());
+            uncommittedDrawIds.current.add(next.id);
             sawInk = true;
           }
         }
@@ -203,7 +222,7 @@ export function useDraftLifecycle(editor: Editor | null) {
     return () => {
       unlisten();
       if (idleTimer.current !== null) window.clearTimeout(idleTimer.current);
-      inFlight.current?.eventSource.close();
+      activeDraft.current?.eventSource?.close();
     };
   }, [editor]);
 

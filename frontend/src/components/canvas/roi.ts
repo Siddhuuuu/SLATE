@@ -6,10 +6,18 @@ export const DEFAULT_MARGIN_FRAC = 0.18; // 15-20% padding per PRD §6
 export const DEFAULT_MAX_LONG_EDGE_PX = 1024; // caps payload + t_capture/t_dispatch
 export const DEFAULT_IDLE_MS = 1000; // idle-trigger window, PRD §6 (~900-1200ms)
 
-/** Reference area used to normalize ink_density into a friendly, roughly
- * 0-1-ish range for the router heuristic — an approximation, not a
- * calibrated physical unit. */
+/** Reference area used to normalize ink_density into a roughly 0-1-ish
+ * range for the router heuristic. MAX_EXPECTED_STROKES_AT_REFERENCE is
+ * the stroke count treated as "maximally dense" at that reference area —
+ * without it, density scales linearly with raw stroke count and blows
+ * past every threshold in router.py (0.15-0.45) for any real drawing.
+ * Confirmed against a real trace: 7 strokes in a ~285,000px² region
+ * produced density=6.46 under the old formula — 18x the fast-tier
+ * threshold — for what was actually a simple, sparse region. This is a
+ * one-sample recalibration, not a fitted constant; revisit once more
+ * real trace data exists, per this file's own stated pattern. */
 const DENSITY_REFERENCE_AREA_PX = 512 * 512;
+const MAX_EXPECTED_STROKES_AT_REFERENCE = 30;
 
 export interface RoiSource {
   bbox: Box;
@@ -24,36 +32,23 @@ export function selectionRoi(editor: Editor): RoiSource | null {
 }
 
 /**
- * Priority 2: a cluster of ink drawn recently, merged by a distance
- * threshold scaled by zoom. `recentDrawIds` comes from useRecentInk (below)
- * — shapes whose last change fell inside the idle window.
+ * Priority 2: everything in `drawIds` unioned into one region — no
+ * distance-threshold sub-clustering. An earlier version tried to merge
+ * only strokes within ~48px of the running union, which silently DROPPED
+ * any stroke further away than that instead of including it — writing
+ * something like "E=mc²" with normal spacing between characters would
+ * lose everything after the first gap. A full union of every id the
+ * caller passes in is simpler and can't drop content; which ids are
+ * "still relevant" is now the caller's job (see useDraftLifecycle.ts's
+ * uncommitted-ink accumulator), not this function's.
  */
-export function inkClusterRoi(editor: Editor, recentDrawIds: TLShapeId[]): RoiSource | null {
-  if (recentDrawIds.length === 0) return null;
+export function inkClusterRoi(editor: Editor, drawIds: TLShapeId[]): RoiSource | null {
+  if (drawIds.length === 0) return null;
 
-  const boxes = recentDrawIds
-    .map((id) => editor.getShapePageBounds(id))
-    .filter((b): b is Box => Boolean(b));
+  const boxes = drawIds.map((id) => editor.getShapePageBounds(id)).filter((b): b is Box => Boolean(b));
   if (boxes.length === 0) return null;
 
-  // Distance-threshold clustering scaled by zoom: merge any stroke bounds
-  // that are within `clusterGapPx` (in screen px, converted to page units)
-  // of the running union. For a v1 heuristic this is a single-pass union
-  // rather than true nearest-neighbor clustering — good enough when the
-  // idle window already limits the candidate set to "recent," which in
-  // practice is almost always one coherent cluster.
-  const zoom = editor.getZoomLevel();
-  const clusterGapPagePx = 48 / zoom;
-
-  let union = boxes[0].clone();
-  for (const b of boxes.slice(1)) {
-    const gap = boxDistance(union, b);
-    if (gap <= clusterGapPagePx) {
-      union = Box.Common([union, b]);
-    }
-  }
-
-  return { bbox: union, source: "ink_cluster" };
+  return { bbox: Box.Common(boxes), source: "ink_cluster" };
 }
 
 /** Priority 3: fallback to whatever's currently on screen. */
@@ -62,14 +57,8 @@ export function viewportRoi(editor: Editor): RoiSource {
 }
 
 /** Runs the priority order from PRD §6 and returns the first hit. */
-export function determineRoi(editor: Editor, recentDrawIds: TLShapeId[]): RoiSource {
-  return selectionRoi(editor) ?? inkClusterRoi(editor, recentDrawIds) ?? viewportRoi(editor);
-}
-
-function boxDistance(a: Box, b: Box): number {
-  const dx = Math.max(a.minX - b.maxX, b.minX - a.maxX, 0);
-  const dy = Math.max(a.minY - b.maxY, b.minY - a.maxY, 0);
-  return Math.hypot(dx, dy);
+export function determineRoi(editor: Editor, drawIds: TLShapeId[]): RoiSource {
+  return selectionRoi(editor) ?? inkClusterRoi(editor, drawIds) ?? viewportRoi(editor);
 }
 
 /** Pads a page-space box by a fraction of its own size (min 15-20%, PRD §6). */
@@ -112,7 +101,7 @@ export async function captureRegion(
   const blob = await exportToBlob({
     editor,
     ids: shapeIds,
-    format: "webp",
+    format: "png", // WebP isn't decodable by Ollama's Go image backend — see backend README notes
     opts: { background: true, bounds: padded, scale, padding: 0 },
   });
 
@@ -122,7 +111,7 @@ export async function captureRegion(
 
   const strokeCount = opts.strokeCount ?? 0;
   const area = Math.max(padded.width * padded.height, 1);
-  const inkDensity = (strokeCount / area) * DENSITY_REFERENCE_AREA_PX;
+  const inkDensity = (strokeCount / area) * DENSITY_REFERENCE_AREA_PX / MAX_EXPECTED_STROKES_AT_REFERENCE;
 
   const bbox: BoundingBox = { x: padded.x, y: padded.y, width: padded.width, height: padded.height };
 
