@@ -72,8 +72,35 @@ def test_partial_tokens():
 
 def test_default_rates_file_loads_and_has_known_models():
     # Sanity check against the real config/rates.yaml, not the test fixture.
-    cost = compute_cost_usd(model="gemini-3-flash", input_tokens=1000, output_tokens=1000)
+    cost = compute_cost_usd(model="gemini-3.6-flash", input_tokens=1000, output_tokens=1000)
     assert cost >= 0.0
 
-    cost_local = compute_cost_usd(model="qwen3-vl:4b", input_tokens=100_000, output_tokens=100_000)
+    cost_local = compute_cost_usd(model="qwen3-vl:4b-instruct", input_tokens=100_000, output_tokens=100_000)
     assert cost_local == 0.0
+
+
+def test_total_tokens_fallback_bills_hidden_reasoning_at_output_rate():
+    # Real finding from a live Gemini trace: input+output (1149) didn't
+    # match the reported total_tokens (1347) — 198 hidden reasoning
+    # tokens billed but not exposed in either visible field. Without this
+    # fallback, cost.py silently undercounts.
+    cost_without_total = compute_cost_usd(
+        model="test-model", input_tokens=1132, output_tokens=17, rates=TEST_RATES
+    )
+    cost_with_total = compute_cost_usd(
+        model="test-model", input_tokens=1132, output_tokens=17, total_tokens=1347, rates=TEST_RATES
+    )
+    assert cost_with_total > cost_without_total
+    # 198 extra tokens billed at the output rate (2.0/million in TEST_RATES)
+    expected_extra = 198 * 2.0 / 1_000_000
+    assert cost_with_total - cost_without_total == pytest.approx(expected_extra)
+
+
+def test_total_tokens_lower_than_accounted_is_ignored():
+    # total_tokens should never REDUCE the bill — only ever add unaccounted
+    # tokens. A total_tokens that's inconsistent-low is treated as unknown.
+    cost = compute_cost_usd(
+        model="test-model", input_tokens=1000, output_tokens=1000, total_tokens=500, rates=TEST_RATES
+    )
+    expected = compute_cost_usd(model="test-model", input_tokens=1000, output_tokens=1000, rates=TEST_RATES)
+    assert cost == expected
