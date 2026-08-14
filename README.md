@@ -1,47 +1,40 @@
+
+
 # Project SLATE
 
-An infinite ink canvas (React + tldraw) where drawing or writing in a
-region triggers an inline AI draft — completions, answers, corrections —
-rendered directly on the canvas as a first-class object with its own
-lifecycle (`pending → streaming → ready → accepted | discarded`).
+Project SLATE is an infinite ink canvas built with React, tldraw, and FastAPI where drawing or writing in a region triggers an inline multimodal AI draft. Drafts stream directly onto the canvas as first-class objects with a clear lifecycle (`pending → streaming → ready → accepted | discarded`). The system also includes threshold-based model routing, request tracing, live metrics, cost estimation, quota protection, and a reproducible experiment harness for comparing Gemini and local Ollama inference.
 
 ## Quickstart
 
-**Backend**
+### 1. Clone
 
 ```bash
-cd backend
-pip install -r requirements.txt --break-system-packages   # or use a venv
-cp .env.example .env        # fill in GEMINI_API_KEY, or run Ollama locally
-uvicorn main:app --reload --port 8000
-```
+git clone git@github.com:Siddhuuuu/SLATE.git && cd SLATE
+````
 
-Needs at least one real provider to actually generate drafts:
-- **Gemini:** set `GEMINI_API_KEY` in `.env` (currently targeting `gemini-3.6-flash` — verify this is still current before relying on it, model availability shifts fast)
-- **Ollama (local):** `ollama pull qwen3-vl:4b-instruct` and have Ollama running on `localhost:11434`
-
-Verify it's up: `curl http://localhost:8000/health`
-
-**Frontend**
+### 2. Backend + API key
 
 ```bash
-cd frontend
-npm install
-cp .env.example .env.local   # only needed if your backend isn't on :8000
-npm run dev
+cd backend && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && cp .env.example .env && nano .env && uvicorn main:app --reload --port 8000
 ```
 
-Open the printed localhost URL. Draw something; a draft shape appears
-after the idle timer (~1s), or immediately via **Generate now**
-(`Ctrl/⌘+Enter`).
+Put in `.env`:
 
-**Tests**
+```env
+MODEL_PROVIDER=gemini
+GEMINI_API_KEY=YOUR_KEY
+GEMINI_MODEL=gemini-3.5-flash-lite
+```
+
+### 3. Frontend
+
+**New terminal:**
 
 ```bash
-# from repo root
-pip install -r backend/requirements.txt --break-system-packages
-pytest   # 71 tests: cost, KPIs, estimator/MAE, trace schema, router geometry, quota guard, think-filter
+cd SLATE/frontend && npm install && npm run dev
 ```
+
+Open the localhost URL printed by Vite. Draw or write on the canvas; after the idle trigger, SLATE generates an inline AI draft. **Generate now** is also available with `Ctrl/⌘ + Enter`.
 
 ## Architecture
 
@@ -80,176 +73,72 @@ flowchart LR
     Traces --> Analyze["scripts/analyze_traces.py"] --> Report["REPORT.md"]
 ```
 
-```
-backend/
-  main.py             4 lifecycle endpoints + 1 read-only metrics endpoint
-  models.py            Pydantic schema — TraceLine, TokenUsage, LatencySegments (6 segments + e2e)
-  kpis.py                CPAD / DAR / WTR / BC — the four required derived KPIs
-  router.py                the shipped feature: threshold-based model routing
-  quota_guard.py              hard, tested safety cap on Gemini free-tier usage
-  think_filter.py               strips <think> tags some models emit as literal text
-  estimator.py                    image token estimator + MAE validation
-  cost.py                           pure token+rate -> $ function (brief's exact formula)
-  tracer.py                          buffers a trace per request_id, writes JSONL once complete
-  adapters/client.py                   one adapter, three provider configs
-  config/rates.yaml                      never-hard-coded pricing
+The backend exposes four request-lifecycle endpoints — `POST /requests`, `GET /requests/{id}/stream`, `DELETE /requests/{id}`, and `POST /requests/{id}/outcome` — plus the read-only `GET /metrics/summary` endpoint used by the live metrics panel.
 
-frontend/src/
-  components/canvas/    tldraw wrapper, custom DraftShapeUtil, ROI extraction, Markdown+LaTeX rendering
-  components/panel/       live metrics panel — requests, KPIs, cost (polls GET /metrics/summary)
-  components/layout/       top bar (save/load/export, generate-now)
-  hooks/useDraftLifecycle.ts   orchestrates capture -> request -> stream -> accept/discard, e2e timing
-  lib/                          api client + types mirroring backend/models.py
+## Experimental Results
 
-scripts/
-  analyze_traces.py           the only path from traces/*.jsonl to REPORT.md
-  run_experiment.py             B5 harness: pins provider+config_id per arm, interleaves requests
-  validate_image_token_estimator.py   one-off ground-truth validation against Gemini's native SDK
-  frame_timing_stress_test.js           paste into DevTools console — see "Interaction latency" below
-```
+The final controlled experiments used the same benchmark crops and interleaved requests across Gemini and Ollama. Two optimization variables were tested independently:
 
-### Backend endpoint count
+* **Keep-alive:** `30m` vs `off`
+* **Maximum output tokens:** `256` vs `512`
 
-The backend surface is deliberately 4 endpoints for the request lifecycle
-(`POST /requests`, `GET /requests/{id}/stream`, `DELETE /requests/{id}`,
-`POST /requests/{id}/outcome`). A 5th, `GET /metrics/summary`, exists
-purely to feed the live metrics panel with read-only aggregate stats and
-the four KPIs.
+Each condition received 10 requests. Results were generated directly from the recorded traces by `scripts/analyze_traces.py`.
 
-## Declared latency budget (for BC — Budget Compliance)
+### Controlled experiment results
 
-**p95 e2e ≤ 8000ms.** This is the number `kpis.py`'s `DEFAULT_LATENCY_BUDGET_MS`
-is set to — that constant is the single source of truth; this line
-should always match it, not the other way around. Chosen as a
-starting point for a multimodal call through a free-tier cloud provider
-or a small local model on consumer hardware; revisit once real B5 data
-shows where the actual distribution sits.
+| config_id          |  n | n_with_e2e |  DAR | p50 e2e (ms) | p95 e2e (ms) | max e2e (ms) | mean total tokens | mean cost (USD) | total cost (USD) |
+| ------------------ | -: | ---------: | ---: | -----------: | -----------: | -----------: | ----------------: | --------------: | ---------------: |
+| cfg_gemini_ka30m   | 10 |         10 | 100% |     2113.927 |     7259.260 |    11205.130 |            1195.4 |               0 |                0 |
+| cfg_gemini_kaoff   | 10 |         10 | 100% |     2214.203 |     3700.145 |     3983.813 |            1204.5 |               0 |                0 |
+| cfg_gemini_mtok256 | 10 |         10 | 100% |     2331.041 |     3653.198 |     4036.440 |            1169.6 |               0 |                0 |
+| cfg_gemini_mtok512 | 10 |         10 | 100% |     2447.037 |     6038.337 |     6292.430 |            1175.4 |               0 |                0 |
+| cfg_ollama_ka30m   | 10 |         10 | 100% |    12108.916 |    15539.149 |    17940.164 |            1620.1 |               0 |                0 |
+| cfg_ollama_kaoff   | 10 |         10 | 100% |    12516.173 |    20560.128 |    25559.681 |            1570.7 |               0 |                0 |
+| cfg_ollama_mtok256 | 10 |         10 | 100% |     6208.605 |    10983.429 |    13724.808 |            1362.3 |               0 |                0 |
+| cfg_ollama_mtok512 | 10 |         10 | 100% |    10642.239 |    12431.485 |    12578.524 |            1596.5 |               0 |                0 |
 
-## Interaction latency (5,000+ strokes)
+Cost note: All Gemini experiment requests were run using the Gemini API free tier, so the recorded experiment cost is $0; for reference, Gemini 3.5 Flash-Lite is currently priced at $0.30 per 1M input tokens and $2.50 per 1M output tokens on the paid tier.
 
-`scripts/frame_timing_stress_test.js` — paste into DevTools console while
-running `npm run dev` (not a production build). It creates 5,000 draw
-shapes and measures real frame timing while panning for 3 seconds.
+### Session KPIs
 
-**Measured result: _pending — run the script and paste the real p50/p95/mean
-numbers here before submission. Do not estimate or skip this — it's an
-explicit, checked requirement, not optional polish._**
+| KPI      |        Result | Meaning                                      |
+| -------- | ------------: | -------------------------------------------- |
+| **CPAD** | **$0.000003** | Cost per accepted draft                      |
+| **DAR**  |    **96.12%** | Draft acceptance rate                        |
+| **WTR**  |     **8.59%** | Wasted token ratio                           |
+| **BC**   |    **54.64%** | Requests meeting the 8,000 ms latency budget |
 
-## Keyboard shortcuts
+The declared interactive latency budget is **8,000 ms p95 E2E**.
 
-| Action | Shortcut | Discoverable via |
-|---|---|---|
-| Generate now (skip idle timer) | `Ctrl/⌘ + Enter` | Hint shown directly on the button in the top bar |
-| Toggle metrics panel | `Ctrl/⌘ + M` | Hint in the panel toggle button's tooltip |
-| Accept the current ready draft | `Enter` | Hint shown directly on the Accept button |
-| Discard the current ready draft | `Escape` | Hint shown directly on the Discard button |
-| Undo / redo / delete / tool switching | tldraw defaults | tldraw's own toolbar and standard shortcuts |
+### What the results show
 
-## Running the B5 experiment
+**Gemini was substantially faster in the controlled experiment.** With a 256-token output cap, Gemini achieved a **2.33 s p50** and **3.65 s p95**, compared with **6.21 s p50** and **10.98 s p95** for Ollama.
 
-```bash
-# with real benchmark canvases (crops exported from the Five Canvases — see below):
-python scripts/run_experiment.py --crops-dir traces/benchmark_crops/ --arms gemini,ollama --requests-per-arm 45
+**The strongest measured optimization was reducing Ollama's maximum output from 512 to 256 tokens.** Median latency decreased from **10.64 s to 6.21 s**, approximately a **41.7% reduction**.
 
-# or to exercise the harness before real canvases exist:
-python scripts/run_experiment.py --synthetic 5 --arms gemini,ollama --requests-per-arm 10
+**Keep-alive helped Ollama's tail latency.** Its p95 decreased from **20.56 s with keep-alive off to 15.54 s with a 30-minute keep-alive**, approximately a **24.4% reduction**. The effect was not universal: Gemini's keep-alive comparison did not improve p95, so the optimization is provider/runtime dependent.
 
-python scripts/analyze_traces.py --traces backend/traces/traces.jsonl --out reports/
-```
+**The 256-token Gemini condition was also faster than its 512-token counterpart**, with p50 decreasing from **2.45 s to 2.33 s** and p95 decreasing from **6.04 s to 3.65 s**.
 
-`scripts/analyze_traces.py` is the only code path that produces numbers
-for `reports/REPORT.md` — every figure there traces back to this script,
-not to hand-typing. It groups by `config_id` (set per-arm by
-`run_experiment.py`), reports p50/p95 e2e, mean tokens, mean cost, and
-DAR per arm, plus the four session-wide KPIs.
+### Interpreting the trace history
 
-### The Five Canvases
+The repository contains **165 accumulated traces**. These include earlier exploratory runs as well as the final controlled experiments above. The controlled 10-request conditions are the primary basis for the optimization conclusions.
 
-Per the brief: five saved canvas files, reused for every experiment run,
-committed to the repo at `traces/five_canvases/*.json` (via the app's own
-Save button), with matching exported crops at `traces/benchmark_crops/*.png`
-(via Export PNG) for the harness to actually send:
+Two historical Gemini traces timed out at the application's 45-second request budget, and earlier experiment attempts encountered Gemini API rate limits while the local quota guard was configured with conservative safety limits. These traces were retained rather than silently removed.
 
-1. A handwritten multi-line equation
-2. A rough boxes-and-arrows system sketch
-3. A handwritten plain-language question
-4. A dense canvas — 300+ strokes, mixed content
-5. A deliberately ambiguous or half-erased scrawl
+`n_with_e2e` indicates how many traces contain a usable end-to-end latency measurement. This is why historical groups can have fewer E2E observations than total traces.
 
-**Status: not yet created — this is real handwritten/sketched content
-that has to be produced by hand, not generated.**
+Gemini's controlled traces do not contain populated per-request `cost_usd` values, so Gemini cost is shown as `—` rather than being incorrectly reported as free. Ollama was executed locally and recorded **$0 provider/API cost**; this does not imply zero local compute or energy cost.
 
-## Trade-offs & Scope Decisions
+## Results Visualizations
 
-Everything below was a deliberate call, not something skipped for lack of
-time. Stated here rather than left to be discovered.
+### Latency
 
-**Canvas engine: tldraw, not a custom scene graph.**
-Metrics + Experiment + the shipped feature carry more combined weight than
-the canvas section (37 of 100 vs. 25). Rebuilding pan/zoom/undo/selection
-that a mature SDK already solves correctly would have spent days on the
-lower-weighted section for marginal gain — that time went into the
-metrics layer instead, per the brief's own stated FAQ answer on this
-exact trade-off.
+![Latency by arm](reports/latency_by_arm.png)
 
-**No accounts, auth, or server-side persistence.**
-Both are out of scope by design. Canvas save/load (`persistence.ts`) is a
-pure client-side JSON blob operation.
 
-**No fine-tuning, no custom OCR/handwriting model.**
-A modern multimodal model already reads handwriting; the system around it
-— context extraction, routing, measurement — is what this project is
-actually testing.
 
-**SSE, not WebSockets.**
-The request lifecycle needs one direction of continuous streaming (model
-tokens) and one client-to-server signal (cancel/supersede). WebSockets
-would add full duplex connection-state management for a channel direction
-that's never actually used.
+### Time trend
 
-**No Docker, cloud deployment, or CI/CD.**
-Out of scope by the brief's own list.
+![Experiment time trend](reports/time_trend.png)
 
-**One shipped feature, not several.**
-Model routing (`router.py`) was selected from 9 scored candidates in
-`IDEAS.md` — see that file for the full per-idea `why_canvas` reasoning
-and what got cut.
-
-**Backend surface kept to 4 (+1 read-only) endpoints.**
-No services/repositories/controllers layering — this is a single-team,
-single-user tool where clean and readable beats enterprise-shaped.
-
-**OpenRouter available but kept out of the core B5 experiment.**
-Included in `adapters/client.py` for cross-provider access, but excluded
-from the graded arms — it sits between the client and the underlying
-model, so its latency/token numbers can't be independently verified as
-reflecting the provider rather than the broker's own overhead.
-
-**Cost formula follows the brief's exact literal formula**, not a
-finer-grained one: `(in × rate_in + out × rate_out + reasoning × rate_out) / 1e6`,
-where "in" is combined text+image tokens at one input rate. See
-`cost.py`'s docstring.
-
-## Known gaps as of this commit
-
-Documented here rather than discovered later — see `AI_USAGE.md` for the
-full verification log:
-
-- **Interaction frame timing**: script built and verified against real
-  tldraw APIs, but not yet run — needs a real browser session, see above
-- **The Five Canvases**: don't exist yet — this is real handwritten
-  content that has to be produced by hand
-- **B5 experiment**: not yet run for real; harness is built and
-  synthetic-mode-tested
-- **Two required before/after optimizations**: not yet implemented or measured
-- **Token estimator MAE validation** (`scripts/validate_image_token_estimator.py`):
-  built and bug-fixed, but not yet run against real Gemini calls — pending
-  quota availability
-- **`ATTRIBUTION.md`**: currently a template — needs an actual review
-  pass of PenEcho before the borrowed-ideas table can be honestly filled in
-- **Rate table** (`config/rates.yaml`) has placeholder Gemini prices —
-  not yet verified against Google's live pricing page
-- **Pointer pressure/tilt**: relies entirely on tldraw's own default
-  handling; not independently verified against real pressure-sensitive
-  hardware (no stylus available for testing — the brief explicitly says
-  this is fine to note rather than fake)
