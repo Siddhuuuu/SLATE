@@ -142,3 +142,20 @@ Gemini's controlled traces do not contain populated per-request `cost_usd` value
 
 ![Experiment time trend](reports/time_trend.png)
 
+### Interaction latency
+
+A browser stress test was run against the development build using the
+tldraw canvas with 4,000 rendered draw shapes while continuously panning
+for 3 seconds.
+
+| Metric | Measured |
+|---|---:|
+| p50 frame time | 6.90 ms |
+| p95 frame time | 10.20 ms |
+| Mean frame time | 6.90 ms |
+| p50 FPS | 144.9 |
+| p95 FPS | 98.0 |
+| Mean FPS | 143.2 |
+
+The test collected 430 frame samples. The current tldraw page limit is
+4,000 shapes, so this run does not claim a 5,000-shape workload.
