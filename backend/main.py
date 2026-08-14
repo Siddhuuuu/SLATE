@@ -223,6 +223,8 @@ async def create_request(payload: CreateRequestIn) -> CreateRequestOut:
             image_width_px=payload.image_width_px,
             image_height_px=payload.image_height_px,
             queue=queue,
+            max_tokens_override=payload.max_tokens_override,
+            ollama_keep_alive=payload.ollama_keep_alive,
         )
     )
     _tasks[request_id] = task
@@ -240,6 +242,8 @@ async def _stream_provider_call(
     image_width_px: int | None,
     image_height_px: int | None,
     queue: "asyncio.Queue",
+    max_tokens: int,
+    ollama_keep_alive: str | None,
 ) -> None:
     client = get_client(provider)  # type: ignore[arg-type]
     tracer.mark_dispatch_complete(request_id)
@@ -255,9 +259,19 @@ async def _stream_provider_call(
     # fully disabled on Gemini 2.5 Pro or any Gemini 3.x model — "low" is
     # the minimum, not "off". Same reasoning applies: never send an
     # Ollama-only or Gemini-only param to the other provider.
+    #
+    # keep_alive is Optimization A (B5): keeps the model resident between
+    # requests instead of Ollama unloading it, avoiding a reload's latency
+    # on the next call. Only meaningful for Ollama, and only sent when the
+    # caller explicitly asked for it (ollama_keep_alive is not None) —
+    # baseline/"off" means Ollama's own default behavior applies
+    # untouched, not this app silently picking a value for it.
     extra_kwargs: dict = {}
     if provider == "ollama":
-        extra_kwargs["extra_body"] = {"think": False}
+        extra_body: dict = {"think": False}
+        if ollama_keep_alive is not None:
+            extra_body["keep_alive"] = ollama_keep_alive
+        extra_kwargs["extra_body"] = extra_body
     elif provider == "gemini":
         extra_kwargs["reasoning_effort"] = "low"
 
@@ -265,7 +279,7 @@ async def _stream_provider_call(
         model=model,
         stream=True,
         stream_options={"include_usage": True},
-        max_tokens=512,
+        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -379,6 +393,9 @@ def _build_token_usage(usage_obj, image_width_px: int | None, image_height_px: i
     )
 
 
+DEFAULT_MAX_TOKENS = 512  # baseline for Optimization B — capped max_tokens, see CreateRequestIn
+
+
 async def _run_model_call(
     request_id: str,
     provider: str,
@@ -387,6 +404,8 @@ async def _run_model_call(
     image_width_px: int | None,
     image_height_px: int | None,
     queue: "asyncio.Queue",
+    max_tokens_override: int | None = None,
+    ollama_keep_alive: str | None = None,
 ) -> None:
     """
     Background task: fires the provider call, streams chunks onto `queue`
@@ -395,10 +414,21 @@ async def _run_model_call(
     logged as outcome="error" (or "timeout") and surfaced to the client
     as-is.
     """
+    max_tokens = max_tokens_override or DEFAULT_MAX_TOKENS
+    tracer.set_optimization_config(request_id, max_tokens_used=max_tokens, ollama_keep_alive_used=ollama_keep_alive)
+
     try:
         await asyncio.wait_for(
             _stream_provider_call(
-                request_id, provider, model, image_b64, image_width_px, image_height_px, queue
+                request_id,
+                provider,
+                model,
+                image_b64,
+                image_width_px,
+                image_height_px,
+                queue,
+                max_tokens=max_tokens,
+                ollama_keep_alive=ollama_keep_alive,
             ),
             timeout=REQUEST_TIMEOUT_S,
         )

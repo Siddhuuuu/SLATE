@@ -41,6 +41,10 @@ export interface CreateRequestBody {
   prompt_chars?: number;
   config_id?: string; // ties this request to a B5 experiment arm
   provider_override?: Provider;
+  // B5 optimization levers — harness-facing (run_experiment.py), not
+  // exposed as live-app UI controls. Omitted = baseline for both.
+  max_tokens_override?: number;
+  ollama_keep_alive?: string;
 }
 
 export interface CreateRequestResponse {

@@ -86,6 +86,22 @@ def test_trace_line_defaults():
     assert trace.outcome == Outcome.pending.value  # use_enum_values=True
     assert trace.trigger == Trigger.idle_pause.value
     assert trace.created_at  # ISO string present
+    # B5 optimization levers — baseline defaults when not overridden
+    assert trace.max_tokens_used == 512
+    assert trace.ollama_keep_alive_used is None
+
+
+def test_trace_line_records_optimization_overrides():
+    trace = TraceLine(
+        provider=Provider.ollama,
+        model="qwen3-vl:4b-instruct",
+        tier=Tier.fast,
+        max_tokens_used=256,
+        ollama_keep_alive_used="30m",
+    )
+    parsed = json.loads(trace.model_dump_json())
+    assert parsed["max_tokens_used"] == 256
+    assert parsed["ollama_keep_alive_used"] == "30m"
 
 
 def test_trace_line_serializes_to_valid_json_line():

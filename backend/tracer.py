@@ -117,6 +117,18 @@ class Tracer:
         if trace is not None:
             trace.effort = effort
 
+    def set_optimization_config(
+        self, request_id: str, max_tokens_used: int, ollama_keep_alive_used: str | None
+    ) -> None:
+        """Records the actual B5 optimization-lever values used for this
+        request, at dispatch time — not inferred later from config_id
+        naming, which would be fragile (a harness typo silently breaks
+        attribution)."""
+        trace = self._buffer.get(request_id)
+        if trace is not None:
+            trace.max_tokens_used = max_tokens_used
+            trace.ollama_keep_alive_used = ollama_keep_alive_used
+
     async def finalize(
         self,
         request_id: str,

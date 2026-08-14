@@ -202,6 +202,17 @@ class CreateRequestIn(BaseModel):
     config_id: Optional[str] = None     # ties this request to a B5 experiment arm — see run_experiment.py
     provider_override: Optional[Provider] = None  # experiment harness only — see router.py
 
+    # --- B5 optimization levers (Section 5's "implement at least two
+    # optimisations... measure before/after") — both per-REQUEST, not
+    # env-var-plus-restart, specifically so run_experiment.py can
+    # interleave on/off exactly like it already interleaves provider
+    # arms. A restart-based toggle would force all-baseline-then-all-
+    # optimized, which is the exact contamination pattern the brief
+    # warns against for provider arms; there's no principled reason to
+    # accept that risk here just because it's a different kind of arm.
+    max_tokens_override: Optional[int] = None    # None = baseline (512, main.py's default)
+    ollama_keep_alive: Optional[str] = None       # None = Ollama's own default (effectively "off")
+
 
 class CreateRequestOut(BaseModel):
     request_id: str
@@ -246,6 +257,8 @@ class TraceLine(BaseModel):
     tier: Tier
     effort: str = "n/a"        # reasoning_effort value sent (Gemini) or "n/a" (Ollama/OpenRouter)
     config_id: Optional[str] = None
+    max_tokens_used: int = 512           # actual cap sent — records the real value, not inferred from config_id naming
+    ollama_keep_alive_used: Optional[str] = None  # actual keep_alive sent, None if not requested (Ollama's own default applied)
     routing_reason: str = ""   # why router.py picked this tier — see router.py
     outcome: Outcome = Outcome.pending
     context: Optional[RegionContext] = None
