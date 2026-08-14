@@ -122,7 +122,7 @@ The declared interactive latency budget is **8,000 ms p95 E2E**.
 
 ### Interpreting the trace history
 
-The repository contains **165 accumulated traces**. These include earlier exploratory runs as well as the final controlled experiments above. The controlled 10-request conditions are the primary basis for the optimization conclusions.
+The repository contains **245 accumulated traces**. These include earlier exploratory runs as well as the final controlled experiments above. The controlled 10-request conditions are the primary basis for the optimization conclusions.
 
 Two historical Gemini traces timed out at the application's 45-second request budget, and earlier experiment attempts encountered Gemini API rate limits while the local quota guard was configured with conservative safety limits. These traces were retained rather than silently removed.
 
