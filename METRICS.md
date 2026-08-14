@@ -1,155 +1,310 @@
-# METRICS.md
+# Project SLATE — Metrics and Measurement Methodology
 
-Filled in as real usage happens — sections marked "not yet run" are
-accurate as of this commit, not a gap being papered over.
+## Purpose
 
-## Trace schema
+This document defines how the reported metrics should be interpreted and how the final numbers were produced.
 
-One JSON object per line, appended atomically, in `backend/traces/traces.jsonl`.
-Matches the brief's documented schema field-for-field — see `backend/models.py`
-for the authoritative Pydantic definitions.
+The goal is to keep the evaluation reproducible and to distinguish:
 
-```json
-{
-  "request_id": "req_00a906d0bb6a",
-  "session_id": "ses_a1b2c3d4e5f6",
-  "created_at": "2026-08-12T19:47:24.914205+00:00",
-  "trigger": "idle_pause",
-  "provider": "gemini",
-  "model": "gemini-3.6-flash",
-  "tier": "heavy",
-  "effort": "low",
-  "config_id": "cfg_gemini",
-  "routing_reason": "ink_density 0.22 <= 0.35",
-  "outcome": "accepted",
-  "context": { "bbox": {"...": "..."}, "zoom": 1.0, "stroke_count": 7 },
-  "input": {
-    "crop_px": [922, 307], "format": "png", "bytes": 41200,
-    "zoom": 1.0, "stroke_count": 7, "prompt_chars": 143
-  },
-  "tokens": {
-    "input_text_tokens": 874, "input_image_tokens": 258,
-    "input_image_source": "estimated",
-    "output_tokens": 17, "reasoning_tokens": 198,
-    "cache_read_tokens": 0, "total_tokens": 1347
-  },
-  "latency_ms": {
-    "t_capture": 24.0, "t_dispatch": 75.8,
-    "ttfb": 620.1, "ttft": 3210.4,
-    "t_stream": 405.7, "t_render": 91.3, "e2e": 4407.3
-  },
-  "cost_usd": 0.000163,
-  "error": null,
-  "retries": 0
-}
+1. accumulated system telemetry,
+2. controlled provider comparisons, and
+3. controlled optimization experiments.
+
+Those are related, but they are not interchangeable.
+
+---
+
+## 1. Trace source
+
+The primary raw measurement source is:
+
+```text
+backend/traces/traces.jsonl
 ```
 
-## Latency segments
+Each trace contains fields for:
 
-| Symbol | Starts | Ends | Measured |
-|---|---|---|---|
-| `t_capture` | Trigger fires (client) | Payload encoded | client, `roi.ts` |
-| `t_dispatch` | Payload received (server) | Provider call fired | server, `tracer.mark_dispatch_complete` |
-| `ttfb` | Provider call fired | First byte of any kind received | server, `tracer.mark_first_byte` |
-| `ttft` | Provider call fired | First **content** token (post think-filter) | server, `tracer.mark_first_content_token` |
-| `t_stream` | First content token | Last content token | server, `tracer.mark_stream_complete` |
-| `t_render` | Last content token | Draft painted on canvas | client, `useDraftLifecycle.ts` |
-| `e2e` | Trigger fires | Draft painted on canvas | client, measured **directly** as one stopwatch, not summed from parts (ttfb/ttft overlap) |
+- request ID
+- session ID
+- timestamp
+- provider
+- model
+- configuration ID
+- routing reason
+- request context
+- input characteristics
+- token counts
+- latency measurements
+- cost
+- outcome
+- error message
+- retry count
 
-**Why ttft can be much larger than ttfb, and why that's the point, not a
-bug**: for a reasoning-capable model, the provider connection opens
-quickly (low ttfb) but the model may spend real time on hidden reasoning
-before emitting visible content (high ttft). This project found exactly
-this empirically — see `AI_USAGE.md`'s entry on the `<think>` tag leak
-and the 198-token reasoning gap found in a real Gemini trace.
+The analyzer consumes these traces and generates:
 
-## Token accounting
-
-`input_image_source` is `"estimated"` for every trace produced so far —
-confirmed via `scripts/validate_image_token_estimator.py`'s sanity check
-that neither Gemini's OpenAI-compat endpoint nor Ollama's usage object
-splits text/image tokens. It becomes `"reported"` only where a provider
-genuinely exposes that split (see that script for the one path found so
-far: Gemini's *native* SDK, `usage_metadata.prompt_tokens_details` —
-unconfirmed whether that field actually populates until the script's
-mandatory `--sanity-check` step is run for real).
-
-`reasoning_tokens` is back-calculated as `total_tokens - (text + image +
-output)` when a provider's `total_tokens` doesn't match the sum of its
-other reported fields — this is exactly what surfaced Gemini's 198
-hidden reasoning tokens in a real trace.
-
-## Cost formula
-
-Follows the brief's exact literal formula (`backend/cost.py`):
-
-```
-cost = (in × rate_in + out × rate_out + reasoning × rate_out) / 1,000,000
+```text
+reports/summary.csv
+reports/REPORT.md
+reports/latency_by_arm.png
+reports/cost_by_arm.png
+reports/time_trend.png
 ```
 
-Where `in` = `input_text_tokens + input_image_tokens`, billed at one input
-rate (the brief's formula gives image tokens no separate rate).
-`reasoning_tokens` billed at the output rate.
+---
 
-### Rate table — source & date
+## 2. Configuration IDs
 
-`backend/config/rates.yaml` currently ships with **placeholder** figures
-for Gemini models. **Verify against ai.google.dev/gemini-api/docs/pricing
-before trusting any cost number in this file or REPORT.md** — not yet done.
+Configuration IDs are the key mechanism for separating experiment conditions.
 
-| Model | Input $/1M | Output $/1M | Source | Verified on |
-|---|---|---|---|---|
-| gemini-3.6-flash | 0.075 (placeholder) | 0.30 (placeholder) | _TODO_ | _not yet_ |
-| qwen3-vl:4b-instruct (local) | $0 marginal | $0 marginal | n/a — local inference | n/a |
+Examples:
 
-Local-model cost is genuinely $0 marginal per request, but not $0 total
-cost (electricity, GPU-hours) — report latency/throughput as the
-headline comparison for the local arm, not a `$0.00` line that implies
-it's free.
+```text
+cfg_gemini
+cfg_ollama
 
-## The four required KPIs
+cfg_gemini_ka30m
+cfg_gemini_kaoff
+cfg_ollama_ka30m
+cfg_ollama_kaoff
 
-Implemented as pure, tested functions in `backend/kpis.py` (17 unit
-tests, including every zero-denominator edge case), computed live in
-`GET /metrics/summary` and in `scripts/analyze_traces.py`'s REPORT.md
-generation — one implementation, two call sites, never two formulas.
+cfg_gemini_mtok256
+cfg_gemini_mtok512
+cfg_ollama_mtok256
+cfg_ollama_mtok512
+```
 
-| KPI | Formula | Why |
-|---|---|---|
-| **CPAD** | total spend ÷ drafts accepted | Cost-per-request rewards cheap, useless answers; this doesn't |
-| **DAR** | accepted ÷ (accepted + discarded) | The only in-app signal of answer quality |
-| **WTR** | tokens on {discarded, cancelled, superseded, timeout, error} ÷ all tokens | What the trigger policy costs for nothing |
-| **BC** | share of requests with `e2e_ms` ≤ declared budget (8000ms) | Declaring a target and measuring against it |
+The analyzer groups traces by `config_id`.
 
-WTR depends on aborted requests actually recording partial token spend —
-see `main.py`'s `_estimate_committed_tokens()`: input tokens are treated
-as fully committed the moment a provider call fires (providers bill input
-regardless of output), output tokens are a rough chars/4 estimate of
-whatever streamed before the abort. Without this, every superseded/timed-out
-request would silently show 0 tokens and WTR would be meaningless.
+This is preferable to inferring experimental conditions from timestamps or environment variables after the fact.
 
-## Token estimator validation (image-token MAE)
+---
 
-**Not yet run.** `scripts/validate_image_token_estimator.py` is built,
-bug-fixed (the original draft's `estimate_image_tokens()` call signature
-was wrong — caught by actually running it, not just reading it — see
-`AI_USAGE.md`), and has a mandatory `--sanity-check` step that must pass
-before the real batch run.
+## 3. Number of observations
 
-| | |
-|---|---|
-| n | _not yet run — need n ≥ 20_ |
-| MAE | _TODO_ |
-| Tiling rule used | `TilingRule(tile_px=768, tokens_per_tile=258, base_tokens=0)` — unverified against live provider docs, see `estimator.py`'s module docstring |
+For each configuration:
 
-## Live panel vs. durable trace file
+- `n` is the number of trace records.
+- `n_with_e2e` is the number of records with a usable E2E latency value.
 
-The in-app metrics panel (`GET /metrics/summary`) reads from the tracer's
-in-memory buffer of completed requests for the current process lifetime,
-plus the four KPIs computed fresh on each poll. `backend/traces/traces.jsonl`
-is the durable copy and the only source `scripts/analyze_traces.py` reads
-from — the two diverge after a backend restart (in-memory resets, the
-JSONL file doesn't), which is expected, not a bug.
+A timeout can therefore appear in `n` without contributing a normal E2E observation.
 
-**Panel screenshot: _pending — capture once the app is running with real
-trace data, per the deliverables list._**
+This is intentional.
+
+Failures should remain visible in the denominator/history rather than being deleted because they make the latency distribution inconvenient.
+
+---
+
+## 4. E2E latency
+
+E2E latency represents the end-to-end time recorded by the tracing system for a request.
+
+The report exposes:
+
+- p50 E2E — median latency
+- p95 E2E — tail latency
+- max E2E — maximum observed latency
+
+### Why p50 and p95?
+
+p50 answers:
+
+> "What does a typical successful request feel like?"
+
+p95 answers:
+
+> "How bad is the slow tail?"
+
+For an interactive AI system, p95 is especially important because occasional long stalls can dominate user experience even when the median is acceptable.
+
+---
+
+## 5. Draft Acceptance Rate
+
+DAR is reported as:
+
+```text
+accepted drafts / relevant draft outcomes
+```
+
+The final session summary reports:
+
+```text
+DAR = 96.12%
+```
+
+A high DAR means that most instrumented requests reached an accepted-draft outcome according to the system's trace semantics.
+
+DAR should not be interpreted as model factual accuracy. It is a **system outcome metric**, not a human correctness score.
+
+---
+
+## 6. Wasted Token Ratio
+
+WTR measures token usage associated with requests that the tracing system considers wasted.
+
+The final session summary reports:
+
+```text
+WTR = 8.59%
+```
+
+This metric is important for an interactive system because superseded/cancelled work can consume compute even when its result is no longer needed.
+
+WTR should therefore be interpreted as an efficiency/cancellation metric, not as a model-quality metric.
+
+---
+
+## 7. Budget Compliance
+
+The configured budget is:
+
+```text
+p95 E2E <= 8000 ms
+```
+
+The final session summary reports:
+
+```text
+BC = 54.64%
+```
+
+Budget Compliance therefore reflects how much of the measured workload satisfies the defined latency target.
+
+The result should be reported honestly: the current system does not yet consistently satisfy the desired interactive latency budget.
+
+---
+
+## 8. CPAD
+
+CPAD means:
+
+```text
+Cost Per Accepted Draft
+```
+
+The generated session summary reports approximately:
+
+```text
+$0.000003
+```
+
+This value is dependent on the trace cost fields and the analyzer's accounting rules.
+
+A missing provider cost field must not be interpreted as a zero-cost API call.
+
+---
+
+## 9. Token measurements
+
+The trace system records:
+
+- input text tokens
+- estimated input image tokens
+- output tokens
+- reasoning tokens when available
+- cache-read tokens
+- total tokens
+
+The image-token field is explicitly marked as estimated in the trace data.
+
+Therefore, image-token values should be described as estimates rather than exact provider-billed image-token counts.
+
+---
+
+## 10. Cost methodology
+
+Ollama runs are local and are recorded with:
+
+```text
+cost_usd = 0
+```
+
+This means zero direct API charge in the trace accounting. It does not mean the local inference has zero electricity, hardware, or opportunity cost.
+
+Gemini cost fields are not consistently populated in the current aggregate output.
+
+For a provider-rate estimate, Gemini 3.5 Flash-Lite's published rates should be applied to the recorded token counts:
+
+```text
+input:  $0.30 / 1M tokens
+output: $2.50 / 1M tokens
+```
+
+This estimate should be presented separately from trace-recorded provider cost.
+
+---
+
+## 11. Experimental controls
+
+The controlled experiments use:
+
+- five benchmark crops
+- maximum image dimension of 1024 px
+- interleaved request ordering
+- fixed experiment configuration per request
+- 10 requests per condition
+- 15-second cooldown
+
+The interleaving is important because it reduces the risk that one provider is always measured at a different point in the run.
+
+---
+
+## 12. Statistical caution
+
+The controlled optimization sample is:
+
+```text
+n = 10 per condition
+```
+
+Therefore:
+
+- report medians and tail statistics,
+- show the raw sample count,
+- avoid claiming statistical significance,
+- avoid claiming universal behavior,
+- describe the results as measured effects in this benchmark.
+
+The conclusions are engineering conclusions from observed distributions, not claims about the providers under every workload.
+
+---
+
+## 13. Historical traces
+
+The raw JSONL intentionally contains earlier exploratory runs.
+
+Two early Gemini traces used:
+
+```text
+gemini-3.1-flash-lite
+```
+
+and timed out at:
+
+```text
+Exceeded 45s request budget
+```
+
+Later controlled experiments used:
+
+```text
+gemini-3.5-flash-lite
+```
+
+Those model configurations are separated conceptually even though the raw trace file is append-only.
+
+This preserves experimental history and prevents accidental erasure of failures.
+
+---
+
+## 14. Reproducibility
+
+Run:
+
+```bash
+python3 scripts/analyze_traces.py
+```
+
+to regenerate the report from the trace file.
+
+The report is therefore generated from machine-readable telemetry rather than manually typed numbers.
