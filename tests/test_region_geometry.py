@@ -1,3 +1,6 @@
+import pytest
+
+import router
 from models import BoundingBox, Provider, RegionContext, Tier
 from router import RoutingThresholds, decide
 
@@ -11,6 +14,11 @@ def make_context(width=512, height=512, stroke_count=5, ink_density=0.1) -> Regi
         ink_density=ink_density,
     )
 
+
+@pytest.fixture(autouse=True)
+def _disable_real_gemini_quota(monkeypatch):
+    """Routing tests should not depend on today's real experiment usage."""
+    monkeypatch.setattr(router, "check_gemini_quota", lambda: None)
 
 def test_small_sparse_region_routes_fast():
     ctx = make_context(width=256, height=256, stroke_count=3, ink_density=0.05)
@@ -43,9 +51,11 @@ def test_text_like_signal_overrides_stroke_count():
     assert decision.tier == Tier.fast
     assert "text-like" in decision.reason
 
+def test_provider_override_bypasses_heuristic_entirely(monkeypatch):
+    monkeypatch.setattr(router, "check_gemini_quota", lambda: None)
 
-def test_provider_override_bypasses_heuristic_entirely():
     ctx = make_context(width=2000, height=2000, stroke_count=200, ink_density=0.9)
+
     decision = decide(ctx, provider_override=Provider.gemini)
     assert decision.provider == Provider.gemini
     assert "pinned" in decision.reason
@@ -53,7 +63,6 @@ def test_provider_override_bypasses_heuristic_entirely():
     decision2 = decide(ctx, provider_override=Provider.ollama)
     assert decision2.provider == Provider.ollama
     assert decision2.tier == Tier.fast
-
 
 def test_routing_reason_is_never_empty():
     ctx = make_context()
