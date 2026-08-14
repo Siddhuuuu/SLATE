@@ -110,6 +110,76 @@
   background: hsl(var(--muted-foreground) / 0.4);
 }
 
+/* Compact prose styling for react-markdown output inside draft cards —
+   default browser margins on p/ul/ol would break a small, dense card
+   layout, and default list markers barely show against the dark card
+   background without an explicit color. */
+.prose-draft {
+  font-size: inherit;
+  line-height: inherit;
+}
+.prose-draft > :first-child {
+  margin-top: 0;
+}
+.prose-draft > :last-child {
+  margin-bottom: 0;
+}
+.prose-draft p {
+  margin: 0.4em 0;
+}
+.prose-draft ul,
+.prose-draft ol {
+  margin: 0.4em 0;
+  padding-left: 1.25em;
+}
+.prose-draft ul {
+  list-style: disc;
+}
+.prose-draft ol {
+  list-style: decimal;
+}
+.prose-draft li {
+  margin: 0.15em 0;
+}
+.prose-draft code {
+  background: hsl(var(--muted));
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.9em;
+}
+.prose-draft pre {
+  background: hsl(var(--muted));
+  border-radius: 6px;
+  padding: 0.5em 0.6em;
+  overflow-x: auto;
+  margin: 0.4em 0;
+}
+.prose-draft pre code {
+  background: transparent;
+  padding: 0;
+}
+.prose-draft strong {
+  font-weight: 600;
+}
+.prose-draft table {
+  border-collapse: collapse;
+  margin: 0.4em 0;
+  font-size: 0.9em;
+}
+.prose-draft th,
+.prose-draft td {
+  border: 1px solid hsl(var(--border));
+  padding: 0.2em 0.5em;
+}
+.prose-draft .katex {
+  font-size: 1em;
+}
+.prose-draft .katex-display {
+  margin: 0.4em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 /*
   The one signature interaction (PRD §5): a draft's border literally shows
   its own state. Dashed = not yet final. Marching ants = actively

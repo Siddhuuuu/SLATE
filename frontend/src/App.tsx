@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Editor } from "tldraw";
 import { Gauge, X } from "lucide-react";
 
@@ -13,6 +13,28 @@ export default function App() {
 
   const handleEditorReady = useCallback((ed: Editor) => setEditor(ed), []);
   const handleTriggerReady = useCallback((trigger: () => void) => setGenerateNow(() => trigger), []);
+
+  // App-level shortcuts: Cmd/Ctrl+Enter (generate now), Cmd/Ctrl+M (toggle
+  // metrics panel). Draft-specific Enter/Esc (accept/discard) live in
+  // useDraftLifecycle.ts, next to the state they act on.
+  useEffect(() => {
+    function handleKeydown(e: KeyboardEvent) {
+      const meta = e.metaKey || e.ctrlKey;
+      if (!meta) return;
+      const target = e.target as HTMLElement | null;
+      if (target && ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
+
+      if (e.key === "Enter") {
+        e.preventDefault();
+        generateNow?.();
+      } else if (e.key.toLowerCase() === "m") {
+        e.preventDefault();
+        setMetricsOpen((v) => !v);
+      }
+    }
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [generateNow]);
 
   return (
     <div className="flex h-screen w-screen flex-col bg-chrome">
@@ -35,7 +57,7 @@ export default function App() {
           <button
             onClick={() => setMetricsOpen((v) => !v)}
             className="pointer-events-auto flex h-9 w-9 items-center justify-center rounded-full border border-border bg-chrome-2 text-muted-foreground shadow-lg transition-colors hover:text-foreground"
-            title={metricsOpen ? "Hide session metrics" : "Show session metrics"}
+            title={`${metricsOpen ? "Hide" : "Show"} session metrics (${navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+M)`}
           >
             {metricsOpen ? <X className="h-4 w-4" /> : <Gauge className="h-4 w-4" />}
           </button>

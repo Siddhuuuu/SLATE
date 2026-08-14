@@ -50,6 +50,13 @@ export function Canvas({ onEditorReady, onTriggerReady }: CanvasProps) {
         onMount={(ed) => {
           setEditor(ed);
           onEditorReady?.(ed);
+          // Dev-only hook for scripts/frame_timing_stress_test.js — the
+          // README's "measured interaction frame timing" number needs a
+          // real browser actually rendering, which this makes possible
+          // without shipping anything that touches production behavior.
+          if (import.meta.env.DEV) {
+            (window as any).__slateEditor = ed;
+          }
         }}
       />
     </div>

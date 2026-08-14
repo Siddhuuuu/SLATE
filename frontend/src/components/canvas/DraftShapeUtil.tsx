@@ -11,7 +11,7 @@ import {
 } from "tldraw";
 
 import { cn } from "@/lib/utils";
-import { MathText } from "./MathText";
+import { MarkdownContent } from "./MarkdownContent";
 import type { DraftStatus } from "@/lib/types";
 
 export const DRAFT_SHAPE_TYPE = "draft" as const;
@@ -159,7 +159,7 @@ export class DraftShapeUtil extends ShapeUtil<DraftShape> {
 
           <div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap text-sm leading-snug">
             {text ? (
-              <MathText text={text} />
+              <MarkdownContent text={text} className="prose-draft" />
             ) : (
               <span className="italic text-muted-foreground">
                 {status === "pending" ? "Waiting to send…" : "Thinking…"}
@@ -175,9 +175,12 @@ export class DraftShapeUtil extends ShapeUtil<DraftShape> {
                   e.stopPropagation();
                   callbacks.onDiscard(requestId);
                 }}
-                className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
               >
                 Discard
+                <kbd className="rounded border border-border/70 bg-muted px-1 font-mono text-[10px] leading-tight text-muted-foreground/80">
+                  Esc
+                </kbd>
               </button>
               <button
                 onPointerDown={(e) => e.stopPropagation()}
@@ -185,9 +188,12 @@ export class DraftShapeUtil extends ShapeUtil<DraftShape> {
                   e.stopPropagation();
                   callbacks.onAccept(requestId);
                 }}
-                className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                className="flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
               >
                 Accept
+                <kbd className="rounded border border-primary-foreground/30 bg-primary-foreground/10 px-1 font-mono text-[10px] leading-tight">
+                  ↵
+                </kbd>
               </button>
             </div>
           )}

@@ -87,6 +87,9 @@ export function TopBar({ editor, onGenerateNow }: TopBarProps) {
               <Button variant="secondary" size="sm" disabled={!onGenerateNow} onClick={() => onGenerateNow?.()}>
                 <Zap className="h-3.5 w-3.5" />
                 Generate now
+                <kbd className="ml-0.5 rounded border border-border/70 bg-muted px-1 font-mono text-[10px] leading-tight text-muted-foreground">
+                  {navigator.platform.includes("Mac") ? "⌘" : "Ctrl"}+↵
+                </kbd>
               </Button>
             </TooltipTrigger>
             <TooltipContent>Skip the idle timer and capture the region immediately</TooltipContent>

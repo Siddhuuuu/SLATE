@@ -3,41 +3,39 @@
 # machine-read by cost.py and should stay pure data.
 #
 # NOTE: these are placeholder figures. Verify against each provider's live
-# pricing page before running the B5 experiment or trusting REPORT.md —
-# see PRD §3's "verify before you build against it" note. This applies
-# doubly to prices, which move more often than API shapes do.
+# pricing page before trusting REPORT.md or METRICS.md.
+#
+# image_per_million intentionally REMOVED as of the schema rewrite that
+# matches the assignment brief: the brief's cost formula (Section 5, B2)
+# bills combined input (text + image) tokens at ONE input rate — there is
+# no separate image rate in the required formula. cost.py no longer reads
+# an image_per_million field even if one is present here.
 
 gemini-3-flash:
   input_per_million: 0.075
   output_per_million: 0.30
-  image_per_million: 0.075   # image tokens billed at input rate unless noted otherwise
   note: "superseded by gemini-3.6-flash below as of this project's build — kept for reference, not in active use."
 
 gemini-3.6-flash:
   input_per_million: 0.075
   output_per_million: 0.30
-  image_per_million: 0.075
-  note: "PLACEHOLDER — verify against ai.google.dev/gemini-api/docs/pricing before trusting any cost figure derived from this. Also: this model's usage object (via the OpenAI-compat endpoint) bills hidden reasoning tokens as part of total_tokens without exposing them in input/output — cost.py's total_tokens fallback handles this, but the true output-token count this represents is an approximation, not exact."
+  note: "PLACEHOLDER — verify against ai.google.dev/gemini-api/docs/pricing before trusting any cost figure derived from this."
 
 qwen3-vl:4b:
   input_per_million: 0.0
   output_per_million: 0.0
-  image_per_million: 0.0
   note: "local inference — zero marginal $ cost, but not zero cost (electricity, GPU-hours). Report latency/throughput, not $0 as a headline number."
 
 qwen3-vl:4b-instruct:
   input_per_million: 0.0
   output_per_million: 0.0
-  image_per_million: 0.0
   note: "local inference, instruct-tuned variant in active use for this project's fast tier."
 
 gemma3:4b:
   input_per_million: 0.0
   output_per_million: 0.0
-  image_per_million: 0.0
 
 google/gemini-flash-1.5:
   input_per_million: 0.075
   output_per_million: 0.30
-  image_per_million: 0.075
   note: "via OpenRouter — broker may add its own margin on top of these; treat as approximate. Excluded from B5 core experiment, see README trade-offs."

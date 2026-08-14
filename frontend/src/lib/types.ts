@@ -4,7 +4,15 @@
 
 export type Provider = "gemini" | "ollama" | "openrouter";
 export type Tier = "fast" | "heavy";
-export type Outcome = "pending" | "accepted" | "discarded" | "error" | "cancelled";
+export type Outcome =
+  | "pending"
+  | "accepted"
+  | "discarded"
+  | "cancelled"
+  | "superseded"
+  | "timeout"
+  | "error";
+export type Trigger = "idle_pause" | "explicit" | "refine";
 
 export interface BoundingBox {
   x: number;
@@ -29,6 +37,9 @@ export interface CreateRequestBody {
   image_height_px?: number;
   context: RegionContext;
   t_capture_ms?: number;
+  trigger: Trigger;
+  prompt_chars?: number;
+  config_id?: string; // ties this request to a B5 experiment arm
   provider_override?: Provider;
 }
 
@@ -42,6 +53,15 @@ export interface CreateRequestResponse {
 export interface OutcomeBody {
   outcome: "accepted" | "discarded";
   t_render_ms?: number;
+  e2e_ms?: number; // trigger-fired -> draft-painted, measured directly client-side
+}
+
+export interface KpiSummary {
+  cpad_usd: number | null;
+  dar: number | null;
+  wtr: number | null;
+  bc: number | null;
+  budget_ms: number;
 }
 
 export interface MetricsSummary {
@@ -50,9 +70,11 @@ export interface MetricsSummary {
   accepted: number;
   discarded: number;
   errors: number;
-  draft_acceptance_rate: number | null;
+  superseded: number;
+  timeouts: number;
   total_cost_usd: number;
   avg_render_ms: number | null;
+  kpis: KpiSummary;
   generated_at: number;
 }
 

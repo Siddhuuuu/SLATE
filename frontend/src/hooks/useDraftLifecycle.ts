@@ -4,6 +4,7 @@ import { createShapeId, type Editor, type TLShapeId } from "tldraw";
 import { DRAFT_SHAPE_TYPE, registerDraftShapeCallbacks } from "@/components/canvas/DraftShapeUtil";
 import { captureRegion, determineRoi, DEFAULT_IDLE_MS } from "@/components/canvas/roi";
 import { cancelRequest, createRequest, reportOutcome, streamDraft } from "@/lib/api";
+import type { Trigger } from "@/lib/types";
 
 interface ActiveDraft {
   requestId: string;
@@ -14,11 +15,18 @@ interface ActiveDraft {
   // sitting next to a fresher capture.
   eventSource: EventSource | null;
   streamStartedAt: number;
+  triggerFiredAt: number; // for e2e_ms — see finalize/markReady below
 }
 
-/** requestId -> render duration, held until the user accepts/discards and
- * we can finally send it in POST /requests/{id}/outcome (PRD §7.1). */
-type PendingRenderTimes = Map<string, number>;
+/** requestId -> { renderMs, e2eMs }, held until the user accepts/discards
+ * and we can finally send both in POST /requests/{id}/outcome (PRD §7.1
+ * clock-skew rule: these are measured client-side and sent as durations,
+ * never as timestamps). */
+interface PendingTiming {
+  renderMs: number;
+  e2eMs: number;
+}
+type PendingTimings = Map<string, PendingTiming>;
 
 export function useDraftLifecycle(editor: Editor | null) {
   // Every draw-shape id created/updated since the LAST accept/discard.
@@ -28,10 +36,10 @@ export function useDraftLifecycle(editor: Editor | null) {
   const uncommittedDrawIds = useRef<Set<TLShapeId>>(new Set());
   const idleTimer = useRef<number | null>(null);
   const activeDraft = useRef<ActiveDraft | null>(null);
-  const pendingRenderTimes = useRef<PendingRenderTimes>(new Map());
+  const pendingTimings = useRef<PendingTimings>(new Map());
   // Holds the current effect's triggerCapture so the stable callback below
   // can always reach the latest closure without itself changing identity.
-  const triggerCaptureRef = useRef<() => void>(() => {});
+  const triggerCaptureRef = useRef<(trigger: Trigger) => void>(() => {});
 
   useEffect(() => {
     if (!editor) return;
@@ -53,9 +61,12 @@ export function useDraftLifecycle(editor: Editor | null) {
       });
     }
 
-    function markReady(draftShapeId: TLShapeId, requestId: string, streamStartedAt: number) {
-      const renderMs = performance.now() - streamStartedAt;
-      pendingRenderTimes.current.set(requestId, renderMs);
+    function markReady(draftShapeId: TLShapeId, requestId: string, streamStartedAt: number, triggerFiredAt: number) {
+      const now = performance.now();
+      pendingTimings.current.set(requestId, {
+        renderMs: now - streamStartedAt,
+        e2eMs: now - triggerFiredAt, // brief's e2e: trigger fires -> draft visible, measured directly
+      });
       const shape = editor!.getShape(draftShapeId);
       if (!shape) return;
       editor!.updateShape({ id: draftShapeId, type: DRAFT_SHAPE_TYPE, props: { status: "ready" } });
@@ -80,8 +91,8 @@ export function useDraftLifecycle(editor: Editor | null) {
 
     async function finalizeOutcome(requestId: string, outcome: "accepted" | "discarded") {
       const shape = findDraftShapeByRequestId(requestId);
-      const renderMs = pendingRenderTimes.current.get(requestId);
-      pendingRenderTimes.current.delete(requestId);
+      const timing = pendingTimings.current.get(requestId);
+      pendingTimings.current.delete(requestId);
 
       if (shape) {
         editor!.updateShape({ id: shape.id, type: DRAFT_SHAPE_TYPE, props: { status: outcome } });
@@ -98,30 +109,39 @@ export function useDraftLifecycle(editor: Editor | null) {
       // brand new uncommitted region, not a continuation of this one.
       uncommittedDrawIds.current.clear();
 
-      await reportOutcome(requestId, { outcome, t_render_ms: renderMs });
+      await reportOutcome(requestId, {
+        outcome,
+        t_render_ms: timing?.renderMs,
+        e2e_ms: timing?.e2eMs,
+      });
     }
 
     /** Replaces whatever draft is currently unsettled — streaming or
      * already ready — with nothing, clearing the way for a fresh capture
-     * that reflects everything accumulated so far. */
-    async function supersedeActive() {
+     * that reflects everything accumulated so far. Returns true if there
+     * was something to supersede, which the caller uses to classify this
+     * new request's trigger as "refine" rather than idle_pause/explicit. */
+    async function supersedeActive(): Promise<boolean> {
       const current = activeDraft.current;
-      if (!current) return;
+      if (!current) return false;
       current.eventSource?.close();
       await cancelRequest(current.requestId); // best-effort no-op if already finalized server-side
       const shape = editor!.getShape(current.draftShapeId);
       if (shape) editor!.deleteShape(shape.id);
       activeDraft.current = null;
+      return true;
     }
 
     function scheduleIdleCheck() {
       if (idleTimer.current !== null) window.clearTimeout(idleTimer.current);
       idleTimer.current = window.setTimeout(() => {
-        void triggerCapture();
+        void triggerCapture("idle_pause");
       }, DEFAULT_IDLE_MS);
     }
 
-    async function triggerCapture() {
+    async function triggerCapture(requestedTrigger: Trigger) {
+      const triggerFiredAt = performance.now(); // e2e stopwatch starts here, per the brief's own definition
+
       const drawIds = [...uncommittedDrawIds.current];
 
       if (drawIds.length === 0 && editor!.getSelectedShapeIds().length === 0) {
@@ -133,7 +153,11 @@ export function useDraftLifecycle(editor: Editor | null) {
       const captured = await captureRegion(editor!, roi, { strokeCount: drawIds.length });
       const tCaptureMs = performance.now() - t0;
 
-      await supersedeActive();
+      const wasSuperseding = await supersedeActive();
+      // "refine" per models.py's Trigger enum: a capture that replaced an
+      // already-unsettled draft for the same evolving region, regardless
+      // of whether idle timer or the explicit button fired it.
+      const trigger: Trigger = wasSuperseding ? "refine" : requestedTrigger;
 
       const draftShapeId = createShapeId();
       editor!.createShape({
@@ -160,6 +184,7 @@ export function useDraftLifecycle(editor: Editor | null) {
           image_height_px: captured.heightPx,
           context: captured.context,
           t_capture_ms: tCaptureMs,
+          trigger,
         });
       } catch (err) {
         markError(draftShapeId, err instanceof Error ? err.message : String(err));
@@ -180,11 +205,17 @@ export function useDraftLifecycle(editor: Editor | null) {
       const streamStartedAt = performance.now();
       const eventSource = streamDraft(created.request_id, {
         onToken: (text) => appendToken(draftShapeId, text),
-        onComplete: () => markReady(draftShapeId, created.request_id, streamStartedAt),
+        onComplete: () => markReady(draftShapeId, created.request_id, streamStartedAt, triggerFiredAt),
         onError: (message) => markError(draftShapeId, message),
       });
 
-      activeDraft.current = { requestId: created.request_id, draftShapeId, eventSource, streamStartedAt };
+      activeDraft.current = {
+        requestId: created.request_id,
+        draftShapeId,
+        eventSource,
+        streamStartedAt,
+        triggerFiredAt,
+      };
     }
 
     registerDraftShapeCallbacks({
@@ -192,7 +223,7 @@ export function useDraftLifecycle(editor: Editor | null) {
       onDiscard: (requestId) => void finalizeOutcome(requestId, "discarded"),
     });
 
-    triggerCaptureRef.current = () => void triggerCapture();
+    triggerCaptureRef.current = (trigger: Trigger) => void triggerCapture(trigger);
 
     // Track ink activity: any create/update of a `draw`-type shape adds it
     // to the uncommitted set (permanently, until accept/discard) and resets
@@ -219,8 +250,34 @@ export function useDraftLifecycle(editor: Editor | null) {
       { source: "user", scope: "document" }
     );
 
+    // Keyboard: Enter accepts, Escape discards the current READY draft —
+    // "every frequent action has a shortcut, and they are discoverable"
+    // (see the visible Enter/Esc hints next to the buttons themselves in
+    // DraftShapeUtil.tsx). Guarded so it never hijacks Enter/Escape when
+    // there's no ready draft to act on, or while typing in a text field.
+    function handleKeydown(e: KeyboardEvent) {
+      const current = activeDraft.current;
+      if (!current) return;
+      const shape = editor!.getShape(current.draftShapeId);
+      if (!shape || (shape.props as any).status !== "ready") return;
+
+      const target = e.target as HTMLElement | null;
+      const isTyping = target && ["INPUT", "TEXTAREA"].includes(target.tagName);
+      if (isTyping) return;
+
+      if (e.key === "Enter") {
+        e.preventDefault();
+        void finalizeOutcome(current.requestId, "accepted");
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        void finalizeOutcome(current.requestId, "discarded");
+      }
+    }
+    window.addEventListener("keydown", handleKeydown);
+
     return () => {
       unlisten();
+      window.removeEventListener("keydown", handleKeydown);
       if (idleTimer.current !== null) window.clearTimeout(idleTimer.current);
       activeDraft.current?.eventSource?.close();
     };
@@ -229,7 +286,7 @@ export function useDraftLifecycle(editor: Editor | null) {
   /** Explicit-gesture trigger (PRD §6) — wired to TopBar's "Generate now"
    * button. Fires the same capture path as the idle timer, immediately. */
   const triggerManualCapture = useCallback(() => {
-    triggerCaptureRef.current();
+    triggerCaptureRef.current("explicit");
   }, []);
 
   return { triggerManualCapture };
