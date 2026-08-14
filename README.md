@@ -69,7 +69,7 @@ flowchart LR
     API --> Tracer --> Cost
     Tracer -.-> Panel
     KPIs --> Panel
-    Tracer --> Traces[("traces/traces.jsonl<br/>one line per request")]
+    Traces[("backend/traces/traces.jsonl<br/>one line per request")]
     Traces --> Analyze["scripts/analyze_traces.py"] --> Report["REPORT.md"]
 ```
 
